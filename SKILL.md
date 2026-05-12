@@ -38,24 +38,49 @@ git clone https://github.com/Mobiss11/youtube-insight.git
 cd youtube-insight
 bash setup.sh
 export DEEPSEEK_API_KEY=sk-...
+
+# Для локальных видеофайлов нужен ffmpeg:
+brew install ffmpeg  # Mac
 ```
 
 ## Использование
 
-### Одно видео
+### Одно YouTube видео
 
 ```bash
 youtube-insight "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
-Или просто дай нейронке ссылку:
-> «Сделай конспект этого видео: https://youtube.com/watch?v=...»
+### Локальный файл
 
-### Несколько видео
+```bash
+# Видео
+youtube-insight --file "/Users/me/Downloads/lecture.mp4"
+
+# Аудио
+youtube-insight --file "/Users/me/Downloads/podcast.wav"
+
+# С названием
+youtube-insight --file "interview.mp4" --title "Интервью с CEO"
+
+# Целая папка
+youtube-insight --dir "/Users/me/Downloads/lectures"
+```
+
+Поддерживаемые форматы:
+- **Аудио:** `.wav`, `.mp3`, `.m4a`, `.flac`, `.ogg`, `.aac`, `.opus`
+- **Видео:** `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`, `.flv`, `.ts`
+
+Для видеофайлов аудиодорожка извлекается автоматически через ffmpeg (должен быть установлен: `brew install ffmpeg`).
+
+### Несколько YouTube видео
 
 ```bash
 youtube-insight --urls "https://youtube.com/watch?v=ID1,https://youtube.com/watch?v=ID2"
 ```
+
+Или просто дай нейронке ссылку:
+> «Сделай конспект этого видео: https://youtube.com/watch?v=...»
 
 ### Весь канал
 

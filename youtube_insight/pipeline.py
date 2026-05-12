@@ -1,11 +1,18 @@
-"""Оркестратор: полный пайплайн YouTube → Транскрибация → Инсайты.
+"""Оркестратор: полный пайплайн YouTube/Локальные файлы → Транскрибация → Инсайты.
 
 Usage:
+    # YouTube
     python -m youtube_insight.pipeline "https://youtube.com/watch?v=VIDEO_ID"
     python -m youtube_insight.pipeline --channel "@pro_money_tg"
     python -m youtube_insight.pipeline --channel "@pro_money_tg" --max 5
     python -m youtube_insight.pipeline --channel "@pro_money_tg" --until "VIDEO_ID"
     python -m youtube_insight.pipeline --urls "url1,url2,url3"
+
+    # Локальные файлы
+    python -m youtube_insight.pipeline --file "/path/to/video.mp4"
+    python -m youtube_insight.pipeline --file "/path/to/audio.wav"
+    python -m youtube_insight.pipeline --dir "/path/to/folder"
+    python -m youtube_insight.pipeline --file "video.mp4" --title "Моё видео"
 """
 
 import argparse
@@ -202,22 +209,166 @@ def process_channel(
     return results
 
 
+def process_local_file(file_path: str, title: str = "", output_dir: Optional[Path] = None) -> dict:
+    """Обработать локальный аудио/видео файл.
+
+    Args:
+        file_path: Путь к файлу (.mp4, .wav, .mp3, .mov, etc.)
+        title: Название (если не указано — из имени файла)
+        output_dir: Директория для результатов
+
+    Returns:
+        dict с транскриптом, инсайтами, метаданными.
+    """
+    from youtube_insight.transcribe import (
+        is_audio_file, is_video_file, extract_audio_from_video,
+    )
+
+    path = Path(file_path).expanduser().resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Файл не найден: {path}")
+
+    if output_dir is None:
+        output_dir = FETCH_DIR
+
+    # Info
+    file_id = path.stem
+    if not title:
+        title = path.stem
+
+    info = {
+        "id": file_id,
+        "title": title,
+        "url": f"file://{path}",
+        "duration": 0,
+        "upload_date": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y%m%d"),
+        "description": "",
+        "channel": "local",
+    }
+
+    print(f"\n📁 {path.name}")
+    print(f"   {title[:80]}")
+
+    # Get audio
+    if is_audio_file(path):
+        print(f"   🎵 Аудио файл — транскрибирую напрямую")
+        audio_path = path
+    elif is_video_file(path):
+        print(f"   🎬 Видео файл — извлекаю аудио...")
+        audio_path = extract_audio_from_video(path)
+        print(f"   📁 {audio_path}")
+    else:
+        raise ValueError(f"Неподдерживаемый формат: {path.suffix}. Поддерживаются: "
+                         f"{sorted(SUPPORTED_AUDIO | SUPPORTED_VIDEO)}")
+
+    # Transcribe
+    transcript = transcribe(audio_path)
+
+    # Clean up extracted audio (keep original)
+    if is_video_file(path):
+        audio_path.unlink(missing_ok=True)
+
+    # Summarize
+    print(f"   🧠 Выжимаю суть через DeepSeek...")
+    insights = summarize(transcript["text"], video_title=title, video_description="")
+
+    # Save
+    result = {
+        "video": info,
+        "transcript": transcript,
+        "insights": insights,
+        "processed_at": datetime.now().isoformat(),
+        "pipeline_version": __version__,
+    }
+
+    result_path = output_dir / f"{file_id}_insight.json"
+    with open(result_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+
+    md_path = output_dir / f"{file_id}_summary.md"
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(format_markdown(result))
+
+    # Print summary
+    print(f"\n   {'='*50}")
+    print(f"   📊 {insights.get('title', title)}")
+    print(f"   {'='*50}")
+    print(f"   {insights.get('summary', '')[:200]}")
+    if insights.get("key_insights"):
+        print(f"\n   💡 Ключевые тезисы:")
+        for i, ins in enumerate(insights["key_insights"], 1):
+            print(f"      {i}. {ins}")
+    if insights.get("actionable_items"):
+        print(f"\n   🎯 Что делать:")
+        for i, act in enumerate(insights["actionable_items"], 1):
+            print(f"      {i}. {act}")
+    fluff = insights.get("fluff_score", 1.0)
+    print(f"\n   💧 Воды: {fluff*100:.0f}%")
+    print(f"   📁 Результат: {result_path}")
+
+    return result
+
+
+def process_directory(dir_path: str, output_dir: Optional[Path] = None) -> list[dict]:
+    """Обработать все медиафайлы в папке."""
+    from youtube_insight.transcribe import is_media_file
+
+    path = Path(dir_path).expanduser().resolve()
+    if not path.is_dir():
+        raise NotADirectoryError(f"Не папка: {path}")
+
+    files = sorted([f for f in path.iterdir() if f.is_file() and is_media_file(f)])
+    if not files:
+        print(f"❌ Нет медиафайлов в {path}")
+        return []
+
+    print(f"\n📂 Папка: {path}")
+    print(f"   Найдено файлов: {len(files)}")
+    for f in files:
+        print(f"   📄 {f.name}")
+
+    results = []
+    for i, f in enumerate(files, 1):
+        print(f"\n{'='*60}")
+        print(f"[{i}/{len(files)}] {f.name}")
+        print(f"{'='*60}")
+        try:
+            result = process_local_file(str(f), title=f.stem, output_dir=output_dir)
+            results.append(result)
+        except Exception as e:
+            print(f"   ❌ Ошибка: {e}")
+            continue
+
+    print(f"\n{'='*60}")
+    print(f"✅ Готово! Обработано {len(results)}/{len(files)} файлов")
+    print(f"📁 Результаты: {output_dir or FETCH_DIR}")
+    print(f"{'='*60}")
+
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="YouTube Insight — транскрибация и выжимка сути из YouTube видео",
+        description="YouTube Insight — транскрибация и выжимка сути из видео/аудио",
     )
-    parser.add_argument("url", nargs="?", help="URL одного видео")
-    parser.add_argument("--channel", "-c", help="URL канала для пакетной обработки")
+    parser.add_argument("url", nargs="?", help="URL одного YouTube видео")
+    parser.add_argument("--channel", "-c", help="URL YouTube канала для пакетной обработки")
     parser.add_argument("--max", "-m", type=int, default=0, help="Макс. количество видео с канала")
     parser.add_argument("--until", "-u", help="ID видео — обработать все видео до этого (включая его)")
-    parser.add_argument("--urls", help="Список URL через запятую")
+    parser.add_argument("--urls", help="Список YouTube URL через запятую")
+
+    # Local files
+    parser.add_argument("--file", "-f", help="Путь к локальному аудио/видео файлу (.mp4, .wav, .mp3, .mov, ...)")
+    parser.add_argument("--dir", "-d", help="Путь к папке с аудио/видео файлами")
+    parser.add_argument("--title", "-t", help="Название для локального файла (если не указано — из имени файла)")
+
     parser.add_argument("--output", "-o", help="Директория для результатов")
     parser.add_argument("--version", action="version", version=f"youtube-insight {__version__}")
 
     args = parser.parse_args()
 
-    # Проверки
-    if not check_yt_dlp():
+    # Проверки (yt-dlp нужен только для YouTube)
+    if not check_yt_dlp() and (args.url or args.channel or args.urls):
         print("❌ yt-dlp не установлен. Выполни: pip install yt-dlp")
         sys.exit(1)
 
@@ -230,15 +381,23 @@ def main():
 
     output_dir = Path(args.output) if args.output else None
 
-    # Single video
-    if args.url:
+    # Local file
+    if args.file:
+        process_local_file(args.file, title=args.title or "", output_dir=output_dir)
+
+    # Local directory
+    elif args.dir:
+        process_directory(args.dir, output_dir=output_dir)
+
+    # Single YouTube video
+    elif args.url:
         process_video(args.url, output_dir)
 
-    # Channel
+    # YouTube channel
     elif args.channel:
         process_channel(args.channel, args.max, args.until)
 
-    # Multiple URLs
+    # Multiple YouTube URLs
     elif args.urls:
         urls = [u.strip() for u in args.urls.split(",")]
         for url in urls:

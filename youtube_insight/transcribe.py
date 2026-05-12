@@ -112,7 +112,50 @@ def transcribe_openai(audio_path: Path, model_size: str = "large-v2") -> dict:
     }
 
 
-def transcribe(audio_path: Path, model_name: Optional[str] = None) -> dict:
+def extract_audio_from_video(video_path: Path, output_dir: Optional[Path] = None) -> Path:
+    """Извлечь аудиодорожку из видеофайла через ffmpeg.
+
+    Args:
+        video_path: Путь к видеофайлу (.mp4, .mov, .mkv, etc.)
+        output_dir: Директория для WAV (по умолчанию — рядом с видео)
+
+    Returns:
+        Путь к WAV-файлу.
+    """
+    import subprocess
+
+    if output_dir is None:
+        output_dir = video_path.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    wav_path = output_dir / f"{video_path.stem}_audio.wav"
+
+    cmd = [
+        "ffmpeg", "-y", "-i", str(video_path),
+        "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+        str(wav_path),
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+
+    if not wav_path.exists():
+        raise FileNotFoundError(f"Audio extraction failed: {wav_path}")
+    return wav_path
+
+
+SUPPORTED_AUDIO = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".opus"}
+SUPPORTED_VIDEO = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".flv", ".ts", ".mts"}
+
+def is_media_file(path: Path) -> bool:
+    """Проверить что файл — аудио или видео."""
+    return path.suffix.lower() in (SUPPORTED_AUDIO | SUPPORTED_VIDEO)
+
+def is_audio_file(path: Path) -> bool:
+    """Проверить что файл — аудио (не требует ffmpeg)."""
+    return path.suffix.lower() in SUPPORTED_AUDIO
+
+def is_video_file(path: Path) -> bool:
+    """Проверить что файл — видео (нужно извлечь аудио)."""
+    return path.suffix.lower() in SUPPORTED_VIDEO
     """Транскрибировать аудиофайл. Авто-выбор бэкенда.
 
     Args:
