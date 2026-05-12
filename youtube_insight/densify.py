@@ -79,6 +79,8 @@ def summarize(transcript_text: str, video_title: str = "", video_description: st
 
     try:
         import urllib.request
+        import ssl
+        import certifi
 
         body = json.dumps({
             "model": DEEPSEEK_MODEL,
@@ -99,7 +101,9 @@ def summarize(transcript_text: str, video_title: str = "", video_description: st
             },
         )
 
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        # Use certifi's CA bundle for SSL (fixes macOS Python SSL issues)
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(req, timeout=60, context=ctx) as resp:
             data = json.loads(resp.read())
 
         content = data["choices"][0]["message"]["content"]
