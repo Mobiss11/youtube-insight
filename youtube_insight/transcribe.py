@@ -156,6 +156,9 @@ def is_audio_file(path: Path) -> bool:
 def is_video_file(path: Path) -> bool:
     """Проверить что файл — видео (нужно извлечь аудио)."""
     return path.suffix.lower() in SUPPORTED_VIDEO
+
+
+def transcribe(audio_path: Path, model_name: Optional[str] = None) -> dict:
     """Транскрибировать аудиофайл. Авто-выбор бэкенда.
 
     Args:
