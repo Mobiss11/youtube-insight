@@ -1,240 +1,355 @@
 #!/usr/bin/env python3
-"""Интерактивный мастер установки YouTube Insight.
+"""
+Интерактивный мастер установки YouTube Insight + Whisper-Skill.
 
-Спрашивает что нужно, проверяет окружение, ставит недостающее,
-и запускает первый тестовый прогон.
+Проводит за руку от нуля до работающего пайплайна:
+1. Проверяет/ставит Whisper-Skill (https://github.com/Mobiss11/Whisper-Skill)
+2. Проверяет/ставит зависимости (yt-dlp, ffmpeg, certifi)
+3. Настраивает DeepSeek API ключ
+4. Запускает тестовый прогон
 
 Использование:
     python wizard.py
 """
 
 import os
-import subprocess
 import sys
+import subprocess
+import json
 from pathlib import Path
 
-
-def section(title: str):
-    print(f"\n{'='*60}")
-    print(f"  {title}")
-    print(f"{'='*60}")
+# ── Colors ──────────────────────────────────────────────
+BOLD = "\033[1m"; GREEN = "\033[32m"; YELLOW = "\033[33m"
+BLUE = "\033[34m"; RED = "\033[31m"; CYAN = "\033[36m"; NC = "\033[0m"
 
 
-def step(num: int, text: str):
-    print(f"\n  [{num}] {text}")
+def heading(text: str):
+    print(f"\n{BOLD}{'='*60}{NC}")
+    print(f"{BOLD}  {text}{NC}")
+    print(f"{BOLD}{'='*60}{NC}")
 
 
-def ok(text: str):
-    print(f"  ✅ {text}")
+def step(n: int, text: str):
+    print(f"\n  {CYAN}[{n}]{NC} {text}")
 
 
-def fail(text: str):
-    print(f"  ❌ {text}")
+def ok(text: str):     print(f"  {GREEN}✅{NC} {text}")
+def fail(text: str):   print(f"  {RED}❌{NC} {text}")
+def warn(text: str):   print(f"  {YELLOW}⚠️{NC}  {text}")
+def info(text: str):   print(f"     {text}")
 
 
-def warn(text: str):
-    print(f"  ⚠️  {text}")
-
-
-def run(cmd: list[str], check: bool = False) -> tuple[int, str, str]:
+def run(cmd: list[str], **kw) -> tuple[int, str, str]:
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, check=check)
+        r = subprocess.run(cmd, capture_output=True, text=True, **kw)
         return r.returncode, r.stdout, r.stderr
     except FileNotFoundError:
         return -1, "", "command not found"
 
 
+def find_whisper_skill() -> Path | None:
+    """Найти установленный Whisper-Skill."""
+    candidates = [
+        Path.home() / ".config/opencode/skills/whisper-skill",
+        Path.home() / ".config/opencode/skills/Whisper-Skill",
+        Path.home() / "Whisper-Skill",
+        Path("/tmp/Whisper-Skill"),
+    ]
+    for p in candidates:
+        if p.exists() and (p / "wizard.py").exists():
+            return p
+    return None
+
+
+def detect_whisper_backend() -> tuple[str, str]:
+    """Проверить какой Whisper установлен. Возвращает (backend, model_name)."""
+    # 1. mlx-whisper (Apple Silicon)
+    try:
+        import mlx_whisper
+        return "mlx", "mlx-community/whisper-large-v3-turbo"
+    except ImportError:
+        pass
+
+    # 2. faster-whisper
+    try:
+        import faster_whisper
+        return "faster", "large-v3"
+    except ImportError:
+        pass
+
+    # 3. openai-whisper
+    try:
+        import whisper
+        return "openai", "large-v2"
+    except ImportError:
+        pass
+
+    return "none", ""
+
+
 def check_python() -> bool:
     v = sys.version_info
-    ok(f"Python {v.major}.{v.minor}.{v.micro}")
-    if v < (3, 11):
-        fail("Нужен Python 3.11+. Обнови: brew install python")
-        return False
-    return True
+    if v >= (3, 11):
+        ok(f"Python {v.major}.{v.minor}.{v.micro}")
+        return True
+    fail(f"Python {v.major}.{v.minor} — нужен 3.11+")
+    info("brew install python@3.11")
+    return False
 
 
 def check_ffmpeg() -> bool:
     code, out, _ = run(["ffmpeg", "-version"])
     if code == 0:
-        ok("ffmpeg (для локальных видео)")
+        ok("ffmpeg")
         return True
     fail("ffmpeg не установлен")
-    print("     brew install ffmpeg")
+    info("brew install ffmpeg")
     return False
 
 
 def check_yt_dlp() -> bool:
     try:
         import yt_dlp
-        ok("yt-dlp (для YouTube)")
+        ok("yt-dlp")
         return True
     except ImportError:
         fail("yt-dlp не установлен")
-        print("     pip install yt-dlp")
+        info("pip install yt-dlp")
         return False
-
-
-def check_whisper() -> str:
-    """Return backend name or empty string."""
-    # mlx-whisper
-    try:
-        import mlx_whisper
-        ok("mlx-whisper (Mac M1-M4, ~8x realtime)")
-        return "mlx"
-    except ImportError:
-        pass
-
-    # faster-whisper
-    try:
-        import faster_whisper
-        ok("faster-whisper (CPU/GPU)")
-        return "faster"
-    except ImportError:
-        pass
-
-    # openai-whisper
-    try:
-        import whisper
-        ok("openai-whisper (fallback, медленный)")
-        return "openai"
-    except ImportError:
-        pass
-
-    fail("Whisper не установлен")
-
-    # Suggest best for platform
-    if sys.platform == "darwin" and "arm" in os.uname().machine:
-        print("     Рекомендую: pip install mlx-whisper")
-    else:
-        print("     Рекомендую: pip install faster-whisper")
-    print("     Или:         pip install openai-whisper")
-    return ""
 
 
 def check_deepseek() -> bool:
     key = os.getenv("DEEPSEEK_API_KEY", "")
     if key and len(key) > 10:
-        ok("DeepSeek API ключ (для выжимки сути)")
+        ok("DeepSeek API ключ")
         return True
     warn("DEEPSEEK_API_KEY не задан")
-    print("     Без него — только транскрибация, без суммаризации.")
-    print("     Ключ: https://platform.deepseek.com/api_keys")
-    print("     export DEEPSEEK_API_KEY=sk-...")
+    info("Без ключа — только транскрибация, без выжимки сути")
+    info("Ключ: https://platform.deepseek.com/api_keys")
+    info("export DEEPSEEK_API_KEY=sk-...")
     return False
 
 
-def install_missing(whisper_backend: str, has_ytdlp: bool):
-    """Установить недостающие пакеты."""
-    section("📦 Установка зависимостей")
-
-    if not has_ytdlp:
-        step(1, "Устанавливаю yt-dlp...")
-        run([sys.executable, "-m", "pip", "install", "yt-dlp", "-q"], check=False)
-
-    if not whisper_backend:
-        if sys.platform == "darwin" and "arm" in os.uname().machine:
-            step(2, "Устанавливаю mlx-whisper (оптимально для Apple Silicon)...")
-            run([sys.executable, "-m", "pip", "install", "mlx-whisper", "-q"], check=False)
-        else:
-            step(2, "Устанавливаю faster-whisper...")
-            run([sys.executable, "-m", "pip", "install", "faster-whisper", "-q"], check=False)
-
-    step(3, "Устанавливаю certifi (SSL)...")
-    run([sys.executable, "-m", "pip", "install", "certifi", "-q"], check=False)
+def is_apple_silicon() -> bool:
+    return sys.platform == "darwin" and "arm" in os.uname().machine
 
 
-def test_run():
-    """Запустить тестовый прогон на коротком видео."""
-    section("🧪 Тестовый прогон")
+def install_whisper_skill():
+    """Клонировать и настроить Whisper-Skill."""
+    heading("📦 Установка Whisper-Skill")
 
-    from youtube_insight.fetch import check_yt_dlp as _yt
-    from youtube_insight.transcribe import detect_whisper_backend
+    ws_path = Path.home() / ".config/opencode/skills/Whisper-Skill"
+    if ws_path.exists():
+        ok(f"Whisper-Skill уже установлен: {ws_path}")
+        return ws_path
 
-    if not _yt() or detect_whisper_backend() == "none":
-        warn("Пропускаю тест — не все зависимости установлены")
-        return
+    print(f"\n  Whisper-Skill — это фундамент для транскрибации.")
+    print(f"  Он сам определит твоё железо и поставит правильный Whisper.")
+    print(f"  https://github.com/Mobiss11/Whisper-Skill\n")
+
+    choice = input(f"  Установить Whisper-Skill в {ws_path}? [Y/n]: ").strip().lower()
+    if choice == "n":
+        warn("Пропускаю установку Whisper-Skill")
+        return None
+
+    step(1, "Клонирую Whisper-Skill...")
+    code, out, err = run([
+        "git", "clone", "https://github.com/Mobiss11/Whisper-Skill.git",
+        str(ws_path),
+    ])
+    if code != 0:
+        fail(f"Не удалось клонировать: {err[:200]}")
+        info("Попробуй вручную: git clone https://github.com/Mobiss11/Whisper-Skill.git")
+        return None
+
+    ok("Whisper-Skill склонирован")
+
+    step(2, "Запускаю детектор окружения Whisper-Skill...")
+    detect_script = ws_path / "scripts" / "detect_env.py"
+    if detect_script.exists():
+        code, out, err = run([sys.executable, str(detect_script)])
+        print(f"     {out[:500]}")
+    else:
+        warn("Скрипт detect_env.py не найден — пропускаю")
+
+    step(3, "Устанавливаю Whisper под твоё железо...")
+    if is_apple_silicon():
+        info("🍎 Apple Silicon → mlx-whisper (нативный Metal, 8x быстрее)")
+        run([sys.executable, "-m", "pip", "install", "mlx-whisper", "-q"])
+    else:
+        info("💻 Стандартный → faster-whisper")
+        run([sys.executable, "-m", "pip", "install", "faster-whisper", "-q"])
+
+    ok("Whisper установлен")
+    return ws_path
+
+
+def install_deps(need_ytdlp: bool):
+    """Установить Python-зависимости."""
+    heading("📦 Зависимости")
+
+    deps = ["certifi"]
+    if need_ytdlp:
+        deps.append("yt-dlp")
+
+    for dep in deps:
+        info(f"pip install {dep}...")
+        run([sys.executable, "-m", "pip", "install", dep, "-q"])
+
+    ok("Зависимости установлены")
+
+
+def test_pipeline():
+    """Запустить тестовый прогон."""
+    heading("🧪 Тестовый прогон")
 
     key = os.getenv("DEEPSEEK_API_KEY", "")
     if not key:
-        print("\n  Вставь DeepSeek API ключ для полного теста:")
-        print("  export DEEPSEEK_API_KEY=sk-...")
-        print("  python wizard.py")
+        print("\n  ⏭️  Пропускаю — нужен DEEPSEEK_API_KEY для полного теста")
+        print("     export DEEPSEEK_API_KEY=sk-...")
+        print("     python wizard.py")
         return
 
-    print("\n  Запускаю тест на 19-секундном видео...")
-    print("  (Это быстро — проверим что всё работает)\n")
+    backend, _ = detect_whisper_backend()
+    if backend == "none":
+        print("\n  ⏭️  Пропускаю — Whisper не установлен")
+        return
+
+    print("\n  🎬 Тестовое видео: Me at the zoo (19 секунд)")
+    print("  Это быстро — просто проверим что всё летает...\n")
 
     code, out, err = run([
         sys.executable, "-m", "youtube_insight.pipeline",
         "https://www.youtube.com/watch?v=jNQXAC9IVRw",
-    ])
+    ], timeout=180)
 
     if code == 0:
-        ok("Тест пройден! Всё работает.")
-        print("\n  📁 Результат в output/jNQXAC9IVRw_*")
+        ok("🎉 Тест пройден! Всё работает.")
+        print("\n  📁 Результат: output/jNQXAC9IVRw_insight.json")
+        print("  📁 Конспект:  output/jNQXAC9IVRw_summary.md")
     else:
         fail("Тест не пройден")
         if err:
-            print(f"  Ошибка: {err[:300]}")
+            print(f"     {err[:300]}")
+        if out:
+            # Maybe pipeline printed progress to stdout
+            lines = out.strip().split("\n")
+            for line in lines[-5:]:
+                print(f"     {line}")
+
+
+def print_usage():
+    heading("🚀 Готово! Команды для работы")
+
+    print(f"""
+  {BOLD}YouTube видео:{NC}
+    youtube-insight "https://www.youtube.com/watch?v=VIDEO_ID"
+
+  {BOLD}Весь YouTube канал:{NC}
+    youtube-insight --channel "@channel_name"
+    youtube-insight --channel "@channel" --max 5
+    youtube-insight --channel "@channel" --until "VIDEO_ID"
+
+  {BOLD}Несколько видео:{NC}
+    youtube-insight --urls "url1,url2,url3"
+
+  {BOLD}Локальные файлы:{NC}
+    youtube-insight --file "/path/to/video.mp4"
+    youtube-insight --file "audio.wav" --title "Мой подкаст"
+
+  {BOLD}Папка с файлами:{NC}
+    youtube-insight --dir "/path/to/folder"
+
+  {BOLD}Программный API:{NC}
+    from youtube_insight.pipeline import process_video
+    result = process_video("https://youtube.com/watch?v=...")
+    print(result["insights"]["key_insights"])
+
+  {BOLD}GitHub:{NC}
+    https://github.com/Mobiss11/youtube-insight
+    https://github.com/Mobiss11/Whisper-Skill
+""")
 
 
 def main():
-    print("=" * 60)
-    print("  🎬 YouTube Insight — Мастер Установки")
-    print("=" * 60)
-    print()
-    print("  Этот мастер проверит всё что нужно и установит недостающее.")
-    print("  После этого ты сможешь обрабатывать видео одной командой.")
-    print()
+    print(f"""
+{BOLD}{BLUE}╔══════════════════════════════════════════════════════╗
+║  🎬 YouTube Insight — Мастер Установки              ║
+║  Транскрибация + Выжимка сути через DeepSeek V4    ║
+╚══════════════════════════════════════════════════════╝{NC}
+    """)
+    print("  Этот мастер проведёт за руку: проверит железо,")
+    print("  поставит Whisper, настроит ключи, и запустит тест.")
+    print("  После этого ты сможешь обрабатывать видео одной командой.\n")
 
-    # === Step 0: What do you want to do? ===
-    section("🎯 Что будем делать?")
-    print()
-    print("  1. Обрабатывать YouTube видео (нужен yt-dlp)")
-    print("  2. Только локальные файлы (yt-dlp не нужен)")
-    print("  3. Всё вместе")
-    print()
+    # ── Step 0: What do you need? ──
+    heading("🎯 Что будем обрабатывать?")
+    print(f"""
+  {CYAN}1{NC}. YouTube видео (нужен yt-dlp)
+  {CYAN}2{NC}. Только локальные файлы (yt-dlp не нужен)
+  {CYAN}3{NC}. Всё вместе
+    """)
+    choice = input("  Выбор [1/2/3, Enter=3]: ").strip() or "3"
+    need_ytdlp = choice in ("1", "3")
 
-    choice = input("  Выбор [1/2/3, Enter = 3]: ").strip() or "3"
+    # ── Step 1: Whisper-Skill ──
+    heading("🔧 Проверка Whisper")
 
-    # === Step 1: Check environment ===
-    section("🔧 Проверка окружения")
+    backend, model = detect_whisper_backend()
+    ws_path = find_whisper_skill()
 
+    if backend != "none":
+        ok(f"Whisper уже установлен (бэкенд: {backend})")
+        if ws_path:
+            ok(f"Whisper-Skill найден: {ws_path}")
+    else:
+        fail("Whisper не установлен")
+        print(f"\n  {BOLD}YouTube Insight использует Whisper-Skill для транскрибации.{NC}")
+        print(f"  Это мой же скилл: https://github.com/Mobiss11/Whisper-Skill")
+        print(f"  Он сам определит твоё железо и поставит лучший Whisper.\n")
+        ws_path = install_whisper_skill()
+
+    # ── Step 2: Environment ──
+    heading("🔧 Проверка окружения")
     check_python()
     if choice in ("2", "3"):
         check_ffmpeg()
-    has_ytdlp = check_yt_dlp() if choice in ("1", "3") else True
-    whisper_backend = check_whisper()
+    if need_ytdlp:
+        check_yt_dlp()
     has_ds = check_deepseek()
 
-    # === Step 2: Install missing ===
-    if not whisper_backend or (choice in ("1", "3") and not has_ytdlp):
-        install_missing(whisper_backend, choice in ("1", "3") and not has_ytdlp)
+    # ── Step 3: Install missing ──
+    need_install = need_ytdlp and not _check_ytdlp_import()
+    if need_install:
+        install_deps(need_ytdlp)
 
-    # === Step 3: Summary ===
-    section("✅ Статус")
+    # ── Step 4: Status ──
+    heading("📊 Статус системы")
 
-    from youtube_insight.transcribe import detect_whisper_backend
-    wb = detect_whisper_backend()
+    backend, model = detect_whisper_backend()
+    print(f"  Whisper:     {'✅ ' + backend if backend != 'none' else '❌ не установлен'}")
+    if is_apple_silicon():
+        print(f"  Процессор:   🍎 Apple Silicon → mlx-whisper (8x быстрее)")
+    print(f"  ffmpeg:      {'✅' if check_ffmpeg() else '❌ brew install ffmpeg'}")
+    if need_ytdlp:
+        print(f"  yt-dlp:      {'✅' if _check_ytdlp_import() else '❌'}")
+    print(f"  DeepSeek:    {'✅ V4 Flash' if has_ds else '⚠️  только транскрибация'}")
 
-    print(f"  Python:     {'✅' if sys.version_info >= (3, 11) else '❌'}")
-    print(f"  Whisper:    {'✅ ' + wb if wb != 'none' else '❌'}")
-    if choice in ("1", "3"):
-        from youtube_insight.fetch import check_yt_dlp as _yt
-        print(f"  yt-dlp:     {'✅' if _yt() else '❌'}")
-    print(f"  DeepSeek:   {'✅' if has_ds else '⚠️  только транскрибация'}")
+    # ── Step 5: Test ──
+    print(f"\n  {BOLD}Запустить тестовый прогон?{NC} (19-сек видео, быстро)")
+    if input("  [Y/n]: ").strip().lower() != "n":
+        test_pipeline()
 
-    print(f"\n  {'='*60}")
-    print(f"  🚀 Готово! Используй:")
-    print(f"    youtube-insight \"https://youtube.com/watch?v=VIDEO_ID\"")
-    print(f"    youtube-insight --file \"/path/to/video.mp4\"")
-    print(f"    youtube-insight --channel \"@channel_name\"")
-    print(f"  {'='*60}")
+    # ── Done ──
+    print_usage()
 
-    # === Step 4: Test ===
-    print("\n  Запустить тестовый прогон? (19-сек видео, быстро)")
-    if input("  [y/N]: ").strip().lower() == "y":
-        test_run()
+
+def _check_ytdlp_import() -> bool:
+    try:
+        import yt_dlp
+        return True
+    except ImportError:
+        return False
 
 
 if __name__ == "__main__":
