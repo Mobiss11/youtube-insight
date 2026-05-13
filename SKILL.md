@@ -31,17 +31,69 @@ YouTube URL / Channel
    └── VIDEO_ID_summary.md     # Markdown-конспект
 ```
 
-## Быстрый старт
+## Как пользоваться
+
+### Шаг 0 — Самый простой путь: интерактивный мастер
+
+Если не хочешь читать документацию — **запусти мастер**, он спросит что нужно и сам всё поставит:
 
 ```bash
 git clone https://github.com/Mobiss11/youtube-insight.git
 cd youtube-insight
-bash setup.sh
-export DEEPSEEK_API_KEY=sk-...
-
-# Для локальных видеофайлов нужен ffmpeg:
-brew install ffmpeg  # Mac
+python wizard.py
 ```
+
+Мастер задаёт вопросы (YouTube или локальные файлы? / есть ключ DeepSeek?) и автоматически:
+- проверяет Python, ffmpeg, yt-dlp, Whisper, DeepSeek
+- ставит недостающие пакеты (mlx-whisper на M1-M4, faster-whisper на остальных)
+- запускает тестовый прогон на 19-секундном видео
+- выдаёт готовые команды для работы
+
+Идеален для не-технарей или быстрого старта. После мастера — сразу можно работать.
+
+### Шаг 1 — Если хочешь руками: проверь окружение
+
+```bash
+python wizard.py  # он сам всё проверит
+```
+
+Если чего-то нет — скрипт скажет что именно и даст команду для установки.
+
+### Шаг 2 — Установка одной командой
+
+```bash
+bash setup.sh
+```
+
+Скрипт сам определит железо и поставит правильный Whisper:
+- **Mac M1/M2/M3/M4** → `mlx-whisper` (нативный Metal, 8x быстрее realtime)
+- **Linux + NVIDIA** → `faster-whisper` (CUDA)
+- **Всё остальное** → `faster-whisper` (CPU)
+
+### Шаг 3 — Ключ DeepSeek (опционально, но рекомендую)
+
+Без ключа — только транскрибация. С ключом — выжимка сути без воды.
+
+```bash
+export DEEPSEEK_API_KEY=sk-...
+```
+
+Ключ брать тут: https://platform.deepseek.com/api_keys
+
+### Шаг 4 — Запусти первый тест
+
+```bash
+# YouTube видео
+youtube-insight "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+
+# Локальный файл
+youtube-insight --file "/path/to/video.mp4"
+
+# Папка с файлами
+youtube-insight --dir "/path/to/folder"
+```
+
+Первое видео обработается чуть дольше (модель загружается), последующие — быстро.
 
 ## Использование
 
